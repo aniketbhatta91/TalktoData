@@ -15,3 +15,5 @@ frontend/dist/
 # Misc
 .DS_Store
 *.log
+backend/users.db
+backend/feedback.jsonl
