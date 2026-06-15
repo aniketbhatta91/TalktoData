@@ -233,6 +233,37 @@ async def health():
     return {"status": "ok", **rag.knowledge_stats()}
 
 
+class FeedbackRequest(BaseModel):
+    session_id: str
+    message_index: int
+    feedback: str          # "up" or "down"
+    user_message: str = ""
+    assistant_message: str = ""
+
+
+@app.post("/api/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    """Record thumbs-up / thumbs-down on a response.
+    Logs to stdout (captured by Render) and appends to feedback.jsonl
+    for future fine-tuning dataset export."""
+    import datetime
+    record = {
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "session_id": req.session_id,
+        "message_index": req.message_index,
+        "feedback": req.feedback,
+        "user_message": req.user_message[:1000],
+        "assistant_message": req.assistant_message[:2000],
+    }
+    print(f"[FEEDBACK] {_json.dumps(record)}", flush=True)
+    try:
+        with open("feedback.jsonl", "a") as f:
+            f.write(_json.dumps(record) + "\n")
+    except Exception:
+        pass
+    return {"status": "recorded", "feedback": req.feedback}
+
+
 class SettingsUpdate(BaseModel):
     settings: dict = {}
     reset: bool = False

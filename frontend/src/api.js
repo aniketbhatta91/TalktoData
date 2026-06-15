@@ -69,12 +69,14 @@ export async function sendChat(sessionId, message, history, domain) {
 /**
  * Streaming chat via SSE. Calls onEvent for each parsed event dict.
  * Event types: intent | status | token | figures | done | error
+ * Pass an AbortSignal via `signal` to cancel mid-stream.
  */
-export async function sendChatStream(sessionId, message, history, domain, onEvent) {
+export async function sendChatStream(sessionId, message, history, domain, onEvent, signal) {
   const res = await fetch(`${BASE}/api/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, message, history, domain: domain || '' }),
+    signal,
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Stream failed' }))
@@ -110,4 +112,24 @@ export async function sendChatStream(sessionId, message, history, domain, onEven
   } finally {
     reader.releaseLock()
   }
+}
+
+/**
+ * Submit thumbs-up / thumbs-down feedback on an assistant response.
+ * Best-effort — never throws.
+ */
+export async function sendFeedback(sessionId, messageIndex, feedback, userMessage, assistantMessage) {
+  try {
+    await fetch(`${BASE}/api/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        message_index: messageIndex,
+        feedback,
+        user_message: userMessage,
+        assistant_message: assistantMessage,
+      }),
+    })
+  } catch { /* feedback is best-effort */ }
 }

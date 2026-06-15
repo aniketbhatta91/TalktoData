@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { sendChatStream } from './api'
+import { sendChatStream, sendFeedback } from './api'
 import DomainSelect from './components/DomainSelect'
 import HelpPanel from './components/HelpPanel'
 import FileUpload from './components/FileUpload'
@@ -14,7 +14,6 @@ import {
   loadSessions, upsertSession, removeSession, genLocalId,
 } from './components/SessionsPanel'
 
-// Shown before any dataset is uploaded
 const DEFAULT_SUGGESTIONS = ['Upload a dataset to see suggestions tailored to your data']
 
 function fmtDate(iso) {
@@ -31,43 +30,38 @@ function fmtDate(iso) {
 export default function App() {
   const [userName, setUserName] = useState('')
   const [domain, setDomain] = useState(null)
-  const [session, setSession] = useState(null)           // backend session (dataset)
+  const [session, setSession] = useState(null)
   const [suggestions, setSuggestions] = useState(DEFAULT_SUGGESTIONS)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState('Upload a CSV/Excel file to begin.')
   const [loading, setLoading] = useState(false)
   const [focused, setFocused] = useState(false)
+  const [feedbacks, setFeedbacks] = useState({})   // { msgIndex: 'up' | 'down' }
 
-  // Persistent session history stored in localStorage
   const [sessions, setSessions] = useState(() => loadSessions())
-  const currentLocalId = useRef(genLocalId())   // local ID for current chat
-
+  const currentLocalId = useRef(genLocalId())
+  const abortRef = useRef(null)
+  const inputRef = useRef(null)
   const bottomRef = useRef(null)
 
-  /* ── auto-scroll ──────────────────────────────────────────────────────── */
   useEffect(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), [messages, loading])
-
-  /* ── background switch once chat starts ──────────────────────────────── */
   useEffect(() => {
     document.body.classList.toggle('chat-active', messages.length > 0)
   }, [messages.length])
 
-  /* ── persist current session whenever messages change ────────────────── */
+  /* ── persist session on every message change ─────────────────────────── */
   useEffect(() => {
     if (!messages.length || !domain) return
     const userMsgs = messages.filter(m => m.role === 'user')
     if (!userMsgs.length) return
-
     const patch = {
       localId: currentLocalId.current,
       id: session?.session_id || null,
       name: session?.dataset || domain.label,
       domain,
       suggestions,
-      // dataset names so the user knows what to re-upload on restore
       datasets: session?.datasets?.map(d => d.name || d) || (session?.dataset ? [session.dataset] : []),
-      // store only role+text (no figures — too large for localStorage)
       messages: messages.map(m => ({ role: m.role, text: m.text, intent: m.intent })),
       messageCount: userMsgs.length,
       createdAt: sessions.find(s => s.localId === currentLocalId.current)?.createdAt || new Date().toISOString(),
@@ -90,24 +84,25 @@ export default function App() {
     }
   }
 
-  /* ── send message (streaming) ────────────────────────────────────────── */
-  const send = async () => {
-    const text = input.trim()
+  /* ── core send logic (reused by send, regenerate) ────────────────────── */
+  const sendMessage = async (text, priorMessages) => {
     if (!text || loading) return
     if (!session) { setStatus('Upload a data file first.'); return }
-    setInput('')
     setLoading(true)
 
-    const history = messages.map(m => ({
+    const history = priorMessages.map(m => ({
       role: m.role === 'user' ? 'user' : 'assistant',
       content: m.text,
     }))
 
-    setMessages(m => [
-      ...m,
+    setMessages([
+      ...priorMessages,
       { role: 'user', text },
       { role: 'assistant', text: '', figures: [], intent: null, streaming: true },
     ])
+
+    const controller = new AbortController()
+    abortRef.current = controller
 
     const patch = (fn) =>
       setMessages(m => {
@@ -118,24 +113,74 @@ export default function App() {
       })
 
     try {
-      await sendChatStream(session.session_id, text, history, domain?.id, (event) => {
-        if (event.type === 'token') {
-          patch(msg => ({ ...msg, text: msg.text + event.text }))
-        } else if (event.type === 'figures') {
-          patch(msg => ({ ...msg, figures: event.figures }))
-        } else if (event.type === 'intent') {
-          patch(msg => ({ ...msg, intent: event.intent }))
-        } else if (event.type === 'done') {
-          patch(msg => ({ ...msg, streaming: false }))
-          setLoading(false)
-        } else if (event.type === 'error') {
-          patch(msg => ({ ...msg, text: `Error: ${event.text}`, streaming: false }))
-          setLoading(false)
-        }
-      })
+      await sendChatStream(
+        session.session_id, text, history, domain?.id,
+        (event) => {
+          if (event.type === 'token') {
+            patch(msg => ({ ...msg, text: msg.text + event.text }))
+          } else if (event.type === 'figures') {
+            patch(msg => ({ ...msg, figures: event.figures }))
+          } else if (event.type === 'intent') {
+            patch(msg => ({ ...msg, intent: event.intent }))
+          } else if (event.type === 'done') {
+            patch(msg => ({ ...msg, streaming: false }))
+            setLoading(false)
+          } else if (event.type === 'error') {
+            patch(msg => ({ ...msg, text: `Error: ${event.text}`, streaming: false }))
+            setLoading(false)
+          }
+        },
+        controller.signal,
+      )
     } catch (err) {
-      patch(msg => ({ ...msg, text: `Error: ${err.message}`, streaming: false }))
+      if (err.name === 'AbortError') {
+        patch(msg => ({ ...msg, streaming: false }))
+      } else {
+        patch(msg => ({ ...msg, text: `Error: ${err.message}`, streaming: false }))
+      }
       setLoading(false)
+    }
+  }
+
+  const send = () => {
+    const text = input.trim()
+    if (!text) return
+    setInput('')
+    sendMessage(text, messages)
+  }
+
+  const stop = () => abortRef.current?.abort()
+
+  /* ── user message actions ────────────────────────────────────────────── */
+  const regenerate = (userMsgIndex) => {
+    if (loading) return
+    const userMsg = messages[userMsgIndex]
+    if (!userMsg || userMsg.role !== 'user') return
+    sendMessage(userMsg.text, messages.slice(0, userMsgIndex))
+  }
+
+  const editMessage = (userMsgIndex) => {
+    if (loading) return
+    const userMsg = messages[userMsgIndex]
+    if (!userMsg || userMsg.role !== 'user') return
+    setMessages(messages.slice(0, userMsgIndex))
+    setInput(userMsg.text)
+    inputRef.current?.focus()
+  }
+
+  /* ── assistant feedback ──────────────────────────────────────────────── */
+  const handleFeedback = async (msgIndex, type) => {
+    // Toggle off if clicking same button again
+    const current = feedbacks[msgIndex]
+    const next = current === type ? null : type
+    setFeedbacks(prev => ({ ...prev, [msgIndex]: next }))
+    if (next && session?.session_id) {
+      const assistantMsg = messages[msgIndex]
+      const userMsg = messages[msgIndex - 1]
+      await sendFeedback(
+        session.session_id, msgIndex, next,
+        userMsg?.text || '', assistantMsg?.text || '',
+      )
     }
   }
 
@@ -145,6 +190,7 @@ export default function App() {
     setSession(null)
     setMessages([])
     setInput('')
+    setFeedbacks({})
     setSuggestions(DEFAULT_SUGGESTIONS)
     setStatus('Upload a CSV/Excel file to begin.')
   }
@@ -154,7 +200,8 @@ export default function App() {
     setDomain(saved.domain)
     setMessages(saved.messages || [])
     setSuggestions(saved.suggestions || DEFAULT_SUGGESTIONS)
-    setSession(null)   // dataset must be re-uploaded; backend session is gone
+    setFeedbacks({})
+    setSession(null)
     const fileList = saved.datasets?.length ? saved.datasets.join(', ') : 'your dataset'
     setStatus(`Chat restored. Re-upload ${fileList} to continue analysis.`)
     setInput('')
@@ -162,7 +209,6 @@ export default function App() {
 
   const deleteSession = (localId) => {
     setSessions(prev => removeSession(prev, localId))
-    // If deleting the current session, start fresh
     if (localId === currentLocalId.current) startNewSession()
   }
 
@@ -171,11 +217,8 @@ export default function App() {
   if (!domain) return <DomainSelect onSelect={setDomain} />
 
   const resetDomain = () => {
-    setDomain(null)
-    setSession(null)
-    setMessages([])
-    setInput('')
-    setStatus('Upload a data file to begin.')
+    setDomain(null); setSession(null); setMessages([])
+    setInput(''); setStatus('Upload a data file to begin.')
   }
 
   /* ── render ──────────────────────────────────────────────────────────── */
@@ -235,11 +278,7 @@ export default function App() {
                       </span>
                     </div>
                   </button>
-                  <button
-                    className="history-delete"
-                    title="Delete"
-                    onClick={() => deleteSession(s.localId)}
-                  >✕</button>
+                  <button className="history-delete" title="Delete" onClick={() => deleteSession(s.localId)}>✕</button>
                 </div>
               ))}
             </div>
@@ -259,18 +298,69 @@ export default function App() {
               <p>Upload a dataset and ask anything about your data.</p>
             </div>
           )}
+
           {messages.map((m, i) => (
-            <div key={i} className={`msg ${m.role}`}>
-              {m.intent && m.intent !== 'chitchat' && (
-                <span className={`intent-chip ${m.intent}`}>
-                  {{ data_analysis: 'Data analysis', knowledge_lookup: 'Knowledge base (RAG)', hybrid: 'Data + RAG' }[m.intent]}
-                </span>
+            <div key={i} className={`msg-wrapper ${m.role}`}>
+              <div className={`msg ${m.role}`}>
+                {m.intent && m.intent !== 'chitchat' && (
+                  <span className={`intent-chip ${m.intent}`}>
+                    {{ data_analysis: 'Data analysis', knowledge_lookup: 'Knowledge base (RAG)', hybrid: 'Data + RAG' }[m.intent]}
+                  </span>
+                )}
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                {m.streaming && m.text && <span className="cursor-blink">▋</span>}
+                {m.figures?.map((fig, j) => <PlotlyChart key={j} figure={fig} />)}
+              </div>
+
+              {/* User message actions: edit + regenerate */}
+              {m.role === 'user' && (
+                <div className="msg-actions msg-actions--user">
+                  <button
+                    className="msg-action-btn"
+                    title="Edit message"
+                    onClick={() => editMessage(i)}
+                    disabled={loading}
+                  >
+                    ✏️ Edit
+                  </button>
+                  <button
+                    className="msg-action-btn"
+                    title="Regenerate response"
+                    onClick={() => regenerate(i)}
+                    disabled={loading}
+                  >
+                    🔄 Retry
+                  </button>
+                </div>
               )}
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
-              {m.streaming && m.text && <span className="cursor-blink">▋</span>}
-              {m.figures?.map((fig, j) => <PlotlyChart key={j} figure={fig} />)}
+
+              {/* Assistant message feedback: thumbs up/down */}
+              {m.role === 'assistant' && !m.streaming && m.text && (
+                <div className="feedback-row">
+                  <button
+                    className={`feedback-btn up ${feedbacks[i] === 'up' ? 'active' : ''}`}
+                    title="Good response"
+                    onClick={() => handleFeedback(i, 'up')}
+                  >
+                    👍
+                  </button>
+                  <button
+                    className={`feedback-btn down ${feedbacks[i] === 'down' ? 'active' : ''}`}
+                    title="Poor response"
+                    onClick={() => handleFeedback(i, 'down')}
+                  >
+                    👎
+                  </button>
+                  {feedbacks[i] && (
+                    <span className="feedback-thanks">
+                      {feedbacks[i] === 'up' ? 'Thanks for the feedback!' : 'We\'ll use this to improve.'}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           ))}
+
           {loading && !messages[messages.length - 1]?.text && <Hologram />}
           <div ref={bottomRef} />
         </main>
@@ -291,14 +381,22 @@ export default function App() {
             </div>
           )}
           <input
+            ref={inputRef}
             value={input}
             onChange={e => setInput(e.target.value)}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
-            onKeyDown={e => e.key === 'Enter' && send()}
+            onKeyDown={e => e.key === 'Enter' && !loading && send()}
             placeholder="Ask about your data — analysis, charts, or why something happened…"
+            disabled={loading}
           />
-          <button onClick={send} disabled={loading}>Send</button>
+          {loading ? (
+            <button className="stop-btn" onClick={stop} title="Stop generation">
+              ⏹ Stop
+            </button>
+          ) : (
+            <button onClick={send} disabled={!input.trim()}>Send</button>
+          )}
         </footer>
       </div>
     </div>

@@ -279,16 +279,51 @@ body.chat-active {
 .switch-user:hover { color: var(--text); }
 
 .chat { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
-.msg { max-width: 80%; padding: 11px 15px; border-radius: 14px; font-size: 0.93rem; line-height: 1.55; }
+/* ── message wrapper (holds bubble + action row) ── */
+.msg-wrapper { display: flex; flex-direction: column; max-width: 80%; }
+.msg-wrapper.user { align-self: flex-end; align-items: flex-end; }
+.msg-wrapper.assistant { align-self: flex-start; align-items: flex-start; }
+
+/* ── user message action buttons (Edit / Retry) ── */
+.msg-actions { display: flex; gap: 5px; margin-top: 5px; opacity: 0; transition: opacity 0.18s; }
+.msg-wrapper:hover .msg-actions { opacity: 1; }
+.msg-action-btn {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--glass); border: 1px solid var(--glass-border);
+  border-radius: 7px; padding: 3px 10px; font-size: 0.72rem;
+  color: var(--text-dim); cursor: pointer; transition: all 0.15s;
+}
+.msg-action-btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); color: var(--text); }
+.msg-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── assistant feedback row (👍 👎) ── */
+.feedback-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.feedback-btn {
+  background: none; border: 1px solid var(--glass-border);
+  border-radius: 7px; padding: 3px 9px; font-size: 0.8rem;
+  cursor: pointer; transition: all 0.15s; color: var(--text-dim);
+}
+.feedback-btn:hover { background: var(--glass); }
+.feedback-btn.up.active { background: rgba(34,197,94,0.18); border-color: #22c55e; }
+.feedback-btn.down.active { background: rgba(239,68,68,0.18); border-color: #ef4444; }
+.feedback-thanks { font-size: 0.7rem; color: var(--text-dim); font-style: italic; }
+
+/* ── stop button ── */
+.stop-btn {
+  padding: 12px 20px; border: none; border-radius: 10px; white-space: nowrap;
+  background: rgba(239,68,68,0.75); color: #fff; font-weight: 600; cursor: pointer;
+  transition: background 0.15s;
+}
+.stop-btn:hover { background: rgba(239,68,68,1); }
+
+.msg { padding: 11px 15px; border-radius: 14px; font-size: 0.93rem; line-height: 1.55; width: 100%; }
 .msg.user {
-  align-self: flex-end;
   background: linear-gradient(135deg, var(--accent), #4f46e5);
   color: #fff;
   border-bottom-right-radius: 4px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 .msg.assistant {
-  align-self: flex-start;
   background: var(--panel);
   backdrop-filter: blur(10px);
   border: 1px solid var(--glass-border);
