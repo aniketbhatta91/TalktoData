@@ -1,0 +1,9 @@
+backend/venv
+backend/chroma_db
+backend/.env
+backend/__pycache__
+backend/services/__pycache__
+frontend/node_modules
+frontend/dist
+sample_data
+.git
