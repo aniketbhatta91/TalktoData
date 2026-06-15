@@ -43,9 +43,9 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     create_tables()
-    if config.ADMIN_EMAIL and config.ADMIN_PASSWORD:
-        hashed = hash_password(config.ADMIN_PASSWORD)
-        seed_admin(config.ADMIN_EMAIL, config.ADMIN_NAME, hashed)
+    # Always seed admin — uses env vars or falls back to defaults
+    hashed = hash_password(config.ADMIN_PASSWORD)
+    seed_admin(config.ADMIN_EMAIL, config.ADMIN_NAME, hashed)
     await seed_domain_knowledge()
 
 

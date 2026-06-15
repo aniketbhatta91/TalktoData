@@ -20,10 +20,10 @@ CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 MAX_AGENT_TURNS = 8
 
 # ── Authentication ────────────────────────────────────────────────────────────
-# Generate a strong random string for JWT_SECRET and add it to your .env
-JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production-please")
+JWT_SECRET = os.getenv("JWT_SECRET", "talktodata-default-secret-change-in-prod")
 
-# Admin user seeded on startup (set both or neither)
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
-ADMIN_NAME = os.getenv("ADMIN_NAME", "Admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+# Admin user seeded automatically on startup.
+# Override via environment variables on Render / production.
+ADMIN_EMAIL    = os.getenv("ADMIN_EMAIL",    "admin@talktodata.com")
+ADMIN_NAME     = os.getenv("ADMIN_NAME",     "Admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin@123")
