@@ -65,6 +65,8 @@ export default function App() {
       name: session?.dataset || domain.label,
       domain,
       suggestions,
+      // dataset names so the user knows what to re-upload on restore
+      datasets: session?.datasets?.map(d => d.name || d) || (session?.dataset ? [session.dataset] : []),
       // store only role+text (no figures — too large for localStorage)
       messages: messages.map(m => ({ role: m.role, text: m.text, intent: m.intent })),
       messageCount: userMsgs.length,
@@ -153,7 +155,8 @@ export default function App() {
     setMessages(saved.messages || [])
     setSuggestions(saved.suggestions || DEFAULT_SUGGESTIONS)
     setSession(null)   // dataset must be re-uploaded; backend session is gone
-    setStatus('Chat history restored. Re-upload your dataset to continue analysis.')
+    const fileList = saved.datasets?.length ? saved.datasets.join(', ') : 'your dataset'
+    setStatus(`Chat restored. Re-upload ${fileList} to continue analysis.`)
     setInput('')
   }
 
@@ -224,6 +227,9 @@ export default function App() {
                     <span className="history-icon">{s.domain?.icon || '📊'}</span>
                     <div className="history-meta">
                       <span className="history-name">{s.name || 'Untitled'}</span>
+                      {s.datasets?.length > 0 && (
+                        <span className="history-files">📎 {s.datasets.join(', ')}</span>
+                      )}
                       <span className="history-info">
                         {s.messageCount || 0} msgs · {fmtDate(s.lastAt)}
                       </span>

@@ -632,6 +632,7 @@ footer button:disabled { opacity: 0.5; }
   text-overflow: ellipsis;
   color: var(--text);
 }
+.history-files { font-size: 0.68rem; color: var(--accent-2); opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
 .history-info { font-size: 0.68rem; color: var(--text-dim); }
 
 .history-delete {

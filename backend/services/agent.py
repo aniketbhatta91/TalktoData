@@ -9,9 +9,20 @@ Tools available to the model:
 - search_knowledge_base: RAG retrieval over ChromaDB for "why" questions
 """
 import json
+import re
 
 import config
 from services import analysis, rag, session_store, settings, sql_guard
+
+
+def _strip_code_blocks(text: str) -> str:
+    """Remove ```python ... ``` fenced code blocks from LLM response text.
+    The model should never echo back the analysis code — only results."""
+    # Remove ```python ... ``` and plain ``` ... ``` blocks
+    cleaned = re.sub(r'```(?:python|py)?\n[\s\S]*?```', '', text, flags=re.IGNORECASE)
+    # Collapse multiple blank lines left behind
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
 
 RUN_PYTHON_DESC = (
     "Execute Python against the uploaded data. In scope: `df` (the active "
@@ -207,7 +218,7 @@ def _run_anthropic(session, system: str, message: str, history: list, domain: st
         )
         if response.stop_reason != "tool_use":
             text = "".join(b.text for b in response.content if b.type == "text")
-            return {"text": text, "figures": figures}
+            return {"text": _strip_code_blocks(text), "figures": figures}
 
         messages.append({"role": "assistant", "content": response.content})
         tool_results = [
@@ -255,7 +266,7 @@ def _run_openai(session, system: str, message: str, history: list, domain: str =
                     raise
         msg = response.choices[0].message
         if not msg.tool_calls:
-            return {"text": msg.content or "", "figures": figures}
+            return {"text": _strip_code_blocks(msg.content or ""), "figures": figures}
 
         messages.append({
             "role": "assistant",
@@ -345,9 +356,10 @@ def _stream_openai(session, system: str, message: str, history: list, domain: st
                             tool_calls[idx]["arguments"] += tc.function.arguments
 
         if not tool_calls:
-            # Final text response — flush buffered tokens now
-            for tok in content_buffer:
-                yield {"type": "token", "text": tok}
+            # Final text response — flush buffer with code block stripping
+            clean = _strip_code_blocks("".join(content_buffer))
+            if clean:
+                yield {"type": "token", "text": clean}
             yield {"type": "figures", "figures": list(figures)}
             return
         # Tool call present — discard content_buffer (it was model "thinking" code, not output)
@@ -395,6 +407,7 @@ def _stream_anthropic(session, system: str, message: str, history: list, domain:
     for _ in range(cfg["max_agent_turns"]):
         tool_uses = []
         current_tool = None
+        text_buffer = []   # buffer text tokens; flush only after we know stop_reason
 
         with client.messages.stream(
             model=config.ANTHROPIC_MODEL,
@@ -416,7 +429,7 @@ def _stream_anthropic(session, system: str, message: str, history: list, domain:
                     delta = event.delta
                     dtype = getattr(delta, "type", None)
                     if dtype == "text_delta":
-                        yield {"type": "token", "text": delta.text}
+                        text_buffer.append(delta.text)   # buffer, don't yield yet
                     elif dtype == "input_json_delta" and current_tool is not None:
                         current_tool["input"] += delta.partial_json
 
@@ -428,8 +441,13 @@ def _stream_anthropic(session, system: str, message: str, history: list, domain:
             final_message = stream.get_final_message()
 
         if final_message.stop_reason != "tool_use" or not tool_uses:
+            # Final answer — flush with code block stripping
+            clean = _strip_code_blocks("".join(text_buffer))
+            if clean:
+                yield {"type": "token", "text": clean}
             yield {"type": "figures", "figures": list(figures)}
             return
+        # Tool call — discard text_buffer (pre-tool thinking text)
 
         messages.append({"role": "assistant", "content": final_message.content})
 
