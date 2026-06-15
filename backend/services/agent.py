@@ -61,6 +61,7 @@ Rules:
 - Quarters/periods: infer from the date column in the data.
 - When the user asks for a table or detailed listing, output a proper markdown table (the UI renders them).
 - Be concise. Report concrete numbers. After fixing a failed code attempt, don't narrate the failure.
+- CRITICAL: NEVER output raw Python code blocks in your text response. ALL code execution must go through the run_python tool. Only show results, insights, and numbers — never the code itself.
 """
 
 
@@ -318,6 +319,7 @@ def _stream_openai(session, system: str, message: str, history: list, domain: st
                     raise
 
         full_content = ""
+        content_buffer = []   # buffer tokens — flush only if no tool call follows
         tool_calls = {}
 
         for chunk in stream:
@@ -327,7 +329,7 @@ def _stream_openai(session, system: str, message: str, history: list, domain: st
 
             if delta.content:
                 full_content += delta.content
-                yield {"type": "token", "text": delta.content}
+                content_buffer.append(delta.content)  # buffer, don't yield yet
 
             if delta.tool_calls:
                 for tc in delta.tool_calls:
@@ -343,9 +345,12 @@ def _stream_openai(session, system: str, message: str, history: list, domain: st
                             tool_calls[idx]["arguments"] += tc.function.arguments
 
         if not tool_calls:
-            # Final text response — no more tool calls
+            # Final text response — flush buffered tokens now
+            for tok in content_buffer:
+                yield {"type": "token", "text": tok}
             yield {"type": "figures", "figures": list(figures)}
             return
+        # Tool call present — discard content_buffer (it was model "thinking" code, not output)
 
         # Append assistant tool-call turn
         messages.append({
