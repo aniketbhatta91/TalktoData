@@ -47,15 +47,23 @@ def get_db():
 
 def seed_admin(email: str, name: str, password_hash: str):
     """Create the admin user if they don't exist yet."""
+    email = email.lower().strip()   # normalise so signin always matches
     db = SessionLocal()
     try:
         existing = db.query(User).filter(User.email == email).first()
         if existing:
-            # Ensure role is admin in case they signed up normally first
+            # Ensure role + status are correct even if they signed up normally
+            changed = False
             if existing.role != "admin":
-                existing.role = "admin"
+                existing.role = "admin"; changed = True
+            if existing.status != "approved":
                 existing.status = "approved"
+                existing.approved_at = datetime.utcnow(); changed = True
+            if changed:
                 db.commit()
+                print(f"[AUTH] Admin role granted to existing user: {email}", flush=True)
+            else:
+                print(f"[AUTH] Admin already exists: {email}", flush=True)
             return
         admin = User(
             name=name,
@@ -68,5 +76,7 @@ def seed_admin(email: str, name: str, password_hash: str):
         db.add(admin)
         db.commit()
         print(f"[AUTH] Admin user created: {email}", flush=True)
+    except Exception as e:
+        print(f"[AUTH] Error seeding admin: {e}", flush=True)
     finally:
         db.close()
