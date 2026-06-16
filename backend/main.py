@@ -234,8 +234,21 @@ def _finalize_dataset(df, name: str, session_id: str | None, domain: str = "gene
     profile = analysis.auto_profile(df)
     sid, session = session_store.get_or_create(session_id)
     name = session_store.add_dataset(session, name, df, profile)
-    summaries = rag.ingest_data_summaries(df, name, domain)
-    suggs = _suggestions.generate(profile, domain, name)
+
+    # RAG ingestion — best-effort; large datasets may produce many chunks
+    try:
+        summaries = rag.ingest_data_summaries(df, name, domain)
+    except Exception as e:
+        print(f"[WARN] RAG ingestion skipped for '{name}': {e}", flush=True)
+        summaries = 0
+
+    # Suggestions via LLM — best-effort; fall back to rule-based on any error
+    try:
+        suggs = _suggestions.generate(profile, domain, name)
+    except Exception as e:
+        print(f"[WARN] Suggestions failed for '{name}': {e}", flush=True)
+        suggs = []
+
     return {
         "session_id": sid,
         "dataset": name,

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { confirmUpload, uploadData, uploadDocs } from '../api'
 
 const DATA_EXTS = /\.(csv|xlsx|xls)$/i
+const MAX_FILE_MB = 100   // skip files larger than this in folder upload
 
 export default function FileUpload({ domain, session, onDataUploaded, onStatus }) {
   const dataAccept = domain?.dataAccept || '.csv,.xlsx,.xls'
@@ -57,10 +58,29 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
   /* ── folder upload ──────────────────────────────────────────────────────── */
   const handleFolder = async (e) => {
     const all = [...e.target.files]
-    const files = all.filter(f => DATA_EXTS.test(f.name))
+
+    // Filter: data files only, no hidden/system files
+    const dataFiles = all.filter(f =>
+      DATA_EXTS.test(f.name) && !f.name.startsWith('.')
+    )
+
+    if (!dataFiles.length) {
+      onStatus('No CSV or Excel files found in the selected folder.')
+      e.target.value = ''
+      return
+    }
+
+    // Separate oversized from processable
+    const maxBytes = MAX_FILE_MB * 1024 * 1024
+    const tooBig  = dataFiles.filter(f => f.size > maxBytes)
+    const files   = dataFiles.filter(f => f.size <= maxBytes)
+
+    if (tooBig.length) {
+      onStatus(`Skipping ${tooBig.length} file(s) over ${MAX_FILE_MB} MB: ${tooBig.map(f => f.name).join(', ')}`)
+    }
 
     if (!files.length) {
-      onStatus('No CSV or Excel files found in the selected folder.')
+      onStatus(`All files exceeded the ${MAX_FILE_MB} MB limit. Please use smaller files.`)
       e.target.value = ''
       return
     }
@@ -71,7 +91,7 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
     let lastRes = null
     let sid = session?.session_id
     let successCount = 0
-    let errors = []
+    const errors = []
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
@@ -80,10 +100,10 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
 
       try {
         const res = await uploadData(file, sid, domain?.id)
-        sid = res.session_id   // keep same session across all files
+        sid = res.session_id
 
         if (res.pii_detected) {
-          // Auto-proceed raw for folder uploads to avoid blocking the batch
+          // Auto-proceed raw so the batch doesn't stall
           const confirmed = await confirmUpload(res.pending_id, 'proceed')
           lastRes = confirmed
         } else {
@@ -92,6 +112,8 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
         successCount++
       } catch (err) {
         errors.push(`${file.name}: ${err.message}`)
+        console.error(`Folder upload error — ${file.name}:`, err)
+        // Continue with next file even if this one failed
       }
     }
 
@@ -99,10 +121,10 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
 
     if (lastRes) {
       onDataUploaded(lastRes)
-      const errNote = errors.length ? ` (${errors.length} failed)` : ''
-      onStatus(`Loaded ${successCount}/${files.length} files from folder${errNote}. Active dataset: '${lastRes.dataset}'.`)
+      const errNote = errors.length ? ` · ${errors.length} failed` : ''
+      onStatus(`Loaded ${successCount}/${files.length} files${errNote}. Active: '${lastRes.dataset}'.`)
     } else {
-      onStatus(`All uploads failed: ${errors.join('; ')}`)
+      onStatus(`No files could be loaded. Errors: ${errors.slice(0, 3).join(' | ')}`)
     }
 
     setBusy(false)

@@ -10,11 +10,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
+MAX_ROWS = 200_000   # rows kept in memory per dataset
+MAX_COLS = 120       # columns included in profile sent to LLM
+
+
 def load_dataframe(path: str, filename: str) -> pd.DataFrame:
     if filename.lower().endswith((".xlsx", ".xls")):
-        df = pd.read_excel(path)
+        df = pd.read_excel(path, nrows=MAX_ROWS)
     else:
-        df = pd.read_csv(path)
+        df = pd.read_csv(path, nrows=MAX_ROWS, on_bad_lines="skip", low_memory=False)
     df.columns = [str(c).strip() for c in df.columns]
     # Best-effort parse of date-like columns
     for col in df.columns:
@@ -29,7 +33,12 @@ def load_dataframe(path: str, filename: str) -> pd.DataFrame:
 
 
 def auto_profile(df: pd.DataFrame) -> dict:
-    """Statistical summary, sanity checks, and IQR outlier detection."""
+    """Statistical summary, sanity checks, and IQR outlier detection.
+    Caps columns at MAX_COLS so the profile JSON stays manageable."""
+    # Cap wide datasets — keep first MAX_COLS columns
+    if df.shape[1] > MAX_COLS:
+        df = df.iloc[:, :MAX_COLS]
+
     numeric = df.select_dtypes(include=np.number)
 
     outliers = {}
