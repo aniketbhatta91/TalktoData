@@ -1,9 +1,32 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { confirmUpload, uploadData, uploadDocs } from '../api'
 
-const DATA_EXTS = /\.(csv|xlsx|xls|tsv)$/i
-const DOC_EXTS  = /\.(pdf|docx|doc|txt|md|pptx|ppt|json)$/i
+const DATA_EXTS = /\.(csv|xlsx|xls|tsv|json)$/i
+const DOC_EXTS  = /\.(pdf|docx|doc|txt|md|pptx|ppt)$/i
 const MAX_FILE_MB = 100
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** Build a plain-text folder index so the LLM knows every file name + type */
+function buildFolderIndex(allFiles) {
+  const lines = [
+    `Folder Upload — ${allFiles.length} file(s) found`,
+    `Uploaded: ${new Date().toLocaleString()}`,
+    '',
+    'File listing:',
+    ...allFiles.map((f, i) =>
+      `${i + 1}. ${f.webkitRelativePath || f.name}  (${fmtSize(f.size)}, ${f.type || 'unknown type'})`
+    ),
+    '',
+    'Data files (CSV/Excel/TSV/JSON) are loaded into the analysis engine.',
+    'Document files (PDF/DOCX/TXT/MD) are indexed into the knowledge base.',
+  ]
+  return new File([lines.join('\n')], '_folder_index.txt', { type: 'text/plain' })
+}
 
 export default function FileUpload({ domain, session, onDataUploaded, onStatus }) {
   const dataAccept = domain?.dataAccept || '.csv,.xlsx,.xls'
@@ -15,9 +38,18 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
 
   const [busy, setBusy] = useState(false)
   const [pendingPii, setPendingPii] = useState(null)
-  const [folderProgress, setFolderProgress] = useState(null)  // { done, total, name }
+  const [folderProgress, setFolderProgress] = useState(null)
+  const [folderFiles, setFolderFiles] = useState(null)   // preview before upload
 
-  /* ── single file upload ─────────────────────────────────────────────────── */
+  // Apply webkitdirectory reliably via DOM attribute (React strips unknown props)
+  useEffect(() => {
+    if (folderRef.current) {
+      folderRef.current.setAttribute('webkitdirectory', '')
+      folderRef.current.setAttribute('multiple', '')
+    }
+  }, [])
+
+  /* ── single data file ───────────────────────────────────────────────────── */
   const finish = (res, prefix = '') => {
     onDataUploaded(res)
     onStatus(`${prefix}Added '${res.dataset}'. ${res.data_summaries_indexed} summaries indexed.`)
@@ -56,37 +88,66 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
     }
   }
 
-  /* ── folder upload ──────────────────────────────────────────────────────── */
-  const handleFolder = async (e) => {
-    const maxBytes = MAX_FILE_MB * 1024 * 1024
-    const all = [...e.target.files].filter(f => !f.name.startsWith('.') && !f.name.startsWith('~'))
+  /* ── docs ───────────────────────────────────────────────────────────────── */
+  const handleDocs = async (e) => {
+    const files = [...e.target.files]
+    if (!files.length) return
+    setBusy(true)
+    try {
+      const res = await uploadDocs(files, domain?.id)
+      const total = res.ingested.reduce((s, r) => s + (r.chunks_indexed || 0), 0)
+      onStatus(`Indexed ${total} chunks from ${files.length} document(s).`)
+    } catch (err) {
+      onStatus(`Error: ${err.message}`)
+    } finally {
+      setBusy(false)
+      e.target.value = ''
+    }
+  }
 
-    // Route by type
-    const dataFiles = all.filter(f => DATA_EXTS.test(f.name) && f.size <= maxBytes)
-    const docFiles  = all.filter(f => DOC_EXTS.test(f.name)  && f.size <= maxBytes)
-    const tooBig    = all.filter(f => f.size > maxBytes)
-    const skipped   = all.filter(f => !DATA_EXTS.test(f.name) && !DOC_EXTS.test(f.name) && f.size <= maxBytes)
-
-    if (!dataFiles.length && !docFiles.length) {
-      const note = tooBig.length ? ` (${tooBig.length} files exceeded ${MAX_FILE_MB} MB limit)` : ''
-      onStatus(`No supported files found in folder${note}. Supported: CSV, Excel, TSV, PDF, DOCX, TXT, MD, JSON.`)
+  /* ── folder scan (show preview first) ──────────────────────────────────── */
+  const handleFolderScan = (e) => {
+    const all = [...e.target.files].filter(
+      f => !f.name.startsWith('.') && !f.name.startsWith('~$')
+    )
+    if (!all.length) {
+      onStatus('No files found in the selected folder.')
       e.target.value = ''
       return
     }
+    // Show preview panel — user clicks "Process folder" to actually upload
+    setFolderFiles(all)
+  }
 
-    const total = dataFiles.length + docFiles.length
+  const processFolderFiles = async () => {
+    if (!folderFiles?.length) return
+    const all = folderFiles
+    const maxBytes = MAX_FILE_MB * 1024 * 1024
+
+    const dataFiles = all.filter(f => DATA_EXTS.test(f.name) && f.size <= maxBytes)
+    const docFiles  = all.filter(f => DOC_EXTS.test(f.name)  && f.size <= maxBytes)
+    const tooBig    = all.filter(f => f.size > maxBytes)
+
+    const total = dataFiles.length + (docFiles.length ? 1 : 0)
     setBusy(true)
-    setFolderProgress({ done: 0, total, name: '' })
+    setFolderFiles(null)
+    setFolderProgress({ done: 0, total: Math.max(total, 1), name: 'Preparing…' })
 
     let lastDataRes = null
     let sid = session?.session_id
     let dataOk = 0
     const errors = []
 
-    // ── 1. Upload data files one by one ────────────────────────────────────
+    // ── 1. Upload a folder index doc so the LLM knows every filename ─────
+    try {
+      const indexFile = buildFolderIndex(all)
+      await uploadDocs([indexFile], domain?.id)
+    } catch { /* non-critical */ }
+
+    // ── 2. Data files one by one ─────────────────────────────────────────
     for (let i = 0; i < dataFiles.length; i++) {
       const file = dataFiles[i]
-      setFolderProgress({ done: i, total, name: file.name })
+      setFolderProgress({ done: i, total, name: file.webkitRelativePath || file.name })
       onStatus(`Data ${i + 1}/${dataFiles.length}: ${file.name}…`)
       try {
         const res = await uploadData(file, sid, domain?.id)
@@ -103,96 +164,110 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
       }
     }
 
-    // ── 2. Upload doc files as a single batch ───────────────────────────────
+    // ── 3. Doc files as one batch ────────────────────────────────────────
     let docChunks = 0
     if (docFiles.length) {
-      setFolderProgress({ done: dataFiles.length, total, name: `${docFiles.length} document(s)…` })
-      onStatus(`Indexing ${docFiles.length} document(s) into knowledge base…`)
+      setFolderProgress({ done: dataFiles.length, total, name: `${docFiles.length} document(s)` })
+      onStatus(`Indexing ${docFiles.length} document(s)…`)
       try {
         const res = await uploadDocs(docFiles, domain?.id)
         docChunks = res.ingested?.reduce((s, r) => s + (r.chunks_indexed || 0), 0) || 0
       } catch (err) {
-        errors.push(`Documents: ${err.message}`)
+        errors.push(`Docs: ${err.message}`)
       }
     }
 
     setFolderProgress(null)
-
-    // ── 3. Report ───────────────────────────────────────────────────────────
     if (lastDataRes) onDataUploaded(lastDataRes)
 
+    // ── 4. Status summary ────────────────────────────────────────────────
     const parts = []
-    if (dataOk)      parts.push(`${dataOk} data file${dataOk > 1 ? 's' : ''} loaded`)
-    if (docChunks)   parts.push(`${docChunks} doc chunks indexed`)
-    if (errors.length) parts.push(`${errors.length} failed`)
+    if (dataOk)        parts.push(`${dataOk} data file${dataOk > 1 ? 's' : ''} loaded`)
+    if (docChunks)     parts.push(`${docChunks} doc chunks indexed`)
+    if (errors.length) parts.push(`${errors.length} error(s)`)
     if (tooBig.length) parts.push(`${tooBig.length} skipped (over ${MAX_FILE_MB} MB)`)
-    if (skipped.length) parts.push(`${skipped.length} unsupported type skipped`)
 
     onStatus(parts.join(' · ') || 'Folder processed.')
     setBusy(false)
-    e.target.value = ''
+    // reset file input so the same folder can be re-selected
+    if (folderRef.current) folderRef.current.value = ''
   }
 
-  /* ── doc upload ─────────────────────────────────────────────────────────── */
-  const handleDocs = async (e) => {
-    const files = [...e.target.files]
-    if (!files.length) return
-    setBusy(true)
-    try {
-      const res = await uploadDocs(files, domain?.id)
-      const total = res.ingested.reduce((s, r) => s + (r.chunks_indexed || 0), 0)
-      onStatus(`Indexed ${total} chunks from ${files.length} document(s) into knowledge base.`)
-    } catch (err) {
-      onStatus(`Error: ${err.message}`)
-    } finally {
-      setBusy(false)
-      e.target.value = ''
-    }
-  }
-
+  /* ── render ─────────────────────────────────────────────────────────────── */
   return (
     <div className="upload-bar">
-      {/* Hidden inputs */}
       <input ref={dataRef}   type="file" accept={dataAccept} hidden onChange={handleData} />
       <input ref={docsRef}   type="file" accept={docsAccept} multiple hidden onChange={handleDocs} />
-      {/* webkitdirectory lets the user pick a whole folder */}
-      <input ref={folderRef} type="file" hidden onChange={handleFolder}
-             {...{ webkitdirectory: '', mozdirectory: '', directory: '' }} />
+      <input ref={folderRef} type="file" hidden onChange={handleFolderScan} />
 
-      {/* Single file */}
       <button className="upload-btn" disabled={busy} onClick={() => dataRef.current.click()}>
-        📄 {session ? 'Add data file' : `Upload CSV / Excel`}
+        📄 {session ? 'Add data file' : 'Upload CSV / Excel'}
       </button>
 
-      {/* Folder */}
-      <button className="upload-btn upload-btn--folder" disabled={busy} onClick={() => folderRef.current.click()}>
+      <button className="upload-btn upload-btn--folder" disabled={busy}
+              onClick={() => folderRef.current.click()}>
         📂 Upload folder
       </button>
 
-      {/* Folder progress bar */}
+      <button className="upload-btn upload-btn--docs" disabled={busy}
+              onClick={() => docsRef.current.click()}>
+        📚 Upload docs (RAG)
+      </button>
+
+      {/* Folder file preview */}
+      {folderFiles && (
+        <div className="folder-preview">
+          <div className="folder-preview-header">
+            <span>📂 {folderFiles.length} file(s) found</span>
+            <button className="folder-preview-close" onClick={() => setFolderFiles(null)}>✕</button>
+          </div>
+          <div className="folder-preview-list">
+            {folderFiles.map((f, i) => {
+              const isData = DATA_EXTS.test(f.name)
+              const isDoc  = DOC_EXTS.test(f.name)
+              const tag    = isData ? '📊' : isDoc ? '📄' : '⚠️'
+              const label  = isData ? 'data' : isDoc ? 'doc' : 'skip'
+              return (
+                <div key={i} className={`folder-file-row ${label}`}>
+                  <span className="folder-file-icon">{tag}</span>
+                  <span className="folder-file-name" title={f.webkitRelativePath || f.name}>
+                    {f.webkitRelativePath || f.name}
+                  </span>
+                  <span className="folder-file-size">{fmtSize(f.size)}</span>
+                  <span className={`folder-file-tag ${label}`}>{label}</span>
+                </div>
+              )
+            })}
+          </div>
+          <div className="folder-preview-footer">
+            <span className="folder-preview-legend">
+              📊 → analysis &nbsp;·&nbsp; 📄 → knowledge base &nbsp;·&nbsp; ⚠️ → skipped
+            </span>
+            <button className="folder-process-btn" onClick={processFolderFiles} disabled={busy}>
+              ⚡ Process folder
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Folder upload progress */}
       {folderProgress && (
         <div className="folder-progress">
-          <div className="folder-progress-bar" style={{ width: `${(folderProgress.done / folderProgress.total) * 100}%` }} />
+          <div className="folder-progress-bar"
+               style={{ width: `${(folderProgress.done / folderProgress.total) * 100}%` }} />
           <span className="folder-progress-label">
             {folderProgress.done}/{folderProgress.total} · {folderProgress.name}
           </span>
         </div>
       )}
 
-      {/* Context docs */}
-      <button className="upload-btn upload-btn--docs" disabled={busy} onClick={() => docsRef.current.click()}>
-        📚 Upload docs (RAG)
-      </button>
-
       {/* PII warning */}
       {pendingPii && (
         <div className="pii-warning">
           <h3>Sensitive data detected</h3>
-          <ul>
-            {pendingPii.findings.map((f) => (
-              <li key={f.column}><strong>{f.column}</strong>: {f.types.join(', ')}</li>
-            ))}
-          </ul>
+          <ul>{pendingPii.findings.map(f => (
+            <li key={f.column}><strong>{f.column}</strong>: {f.types.join(', ')}</li>
+          ))}</ul>
           <p>Mask it before analysis, or proceed with the raw values?</p>
           <div className="pii-actions">
             <button disabled={busy} className="mask"    onClick={() => resolvePii('mask')}>Mask PII (safe)</button>
@@ -204,7 +279,7 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
       {/* Loaded datasets */}
       {session?.datasets?.length > 0 && (
         <div className="dataset-list">
-          {session.datasets.map((d) => (
+          {session.datasets.map(d => (
             <span key={d.name} className="dataset-chip" title={d.columns?.join(', ')}>
               {d.name} · {d.rows} rows
             </span>

@@ -190,6 +190,69 @@ body.chat-active {
   font-size: 0.72rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   text-shadow: 0 1px 3px rgba(0,0,0,0.6);
 }
+
+/* ── Folder preview panel ────────────────────────────────────────────────── */
+.folder-preview {
+  margin-top: 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: rgba(13, 14, 36, 0.92);
+  overflow: hidden;
+  font-size: 0.8rem;
+}
+.folder-preview-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.05);
+  border-bottom: 1px solid var(--glass-border);
+  font-weight: 600; color: var(--text);
+}
+.folder-preview-close {
+  background: none; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 1rem; line-height: 1; padding: 2px 4px;
+}
+.folder-preview-close:hover { color: var(--text); }
+.folder-preview-list {
+  max-height: 220px; overflow-y: auto;
+}
+.folder-file-row {
+  display: grid; grid-template-columns: 22px 1fr 60px 46px;
+  gap: 6px; align-items: center;
+  padding: 5px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.folder-file-row:last-child { border-bottom: none; }
+.folder-file-row.skip { opacity: 0.4; }
+.folder-file-icon { font-size: 1rem; text-align: center; }
+.folder-file-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text); font-size: 0.77rem;
+}
+.folder-file-size { color: var(--text-dim); font-size: 0.72rem; text-align: right; }
+.folder-file-tag {
+  font-size: 0.67rem; font-weight: 700; text-align: center;
+  padding: 2px 6px; border-radius: 20px;
+}
+.folder-file-tag.data  { background: rgba(34,211,238,0.15); color: var(--accent-2); }
+.folder-file-tag.doc   { background: rgba(99,102,241,0.15); color: #a5b4fc; }
+.folder-file-tag.skip  { background: rgba(255,255,255,0.07); color: var(--text-dim); }
+.folder-preview-footer {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 8px 12px;
+  background: rgba(255,255,255,0.03);
+  border-top: 1px solid var(--glass-border);
+}
+.folder-preview-legend { color: var(--text-dim); font-size: 0.72rem; }
+.folder-process-btn {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border: none; border-radius: 8px; color: #fff;
+  font-size: 0.78rem; font-weight: 700; cursor: pointer;
+  padding: 6px 14px; white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.folder-process-btn:hover:not(:disabled) { opacity: 0.85; }
+.folder-process-btn:disabled { opacity: 0.5; cursor: default; }
+
 .status { font-size: 0.8rem; color: var(--text-dim); line-height: 1.5; }
 
 /* ---- PII warning panel ---- */
