@@ -27,81 +27,116 @@ body.chat-active {
 .app { height: 100vh; display: flex; }
 
 /* ---- domain selection landing screen ---- */
+/* ── Domain selection screen ─────────────────────────────────────────────── */
 .domain-screen {
   height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 24px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 24px;
+  background: linear-gradient(160deg, var(--bg-1), var(--bg-2));
 }
 .domain-title {
-  font-size: 2.2rem;
+  font-size: 2.4rem; font-weight: 800; letter-spacing: -0.5px;
   background: linear-gradient(90deg, #c7d2fe, #67e8f9);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  margin-bottom: 2px;
 }
-.domain-sub { color: var(--text-dim); margin-bottom: 18px; }
-.domain-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(200px, 260px));
-  gap: 14px;
-}
-@keyframes float-in {
-  from { opacity: 0; transform: translateY(60px) scale(0.88); }
-  to   { opacity: 1; transform: translateY(0)   scale(1); }
+.domain-sub { color: var(--text-dim); font-size: 0.95rem; margin-bottom: 8px; }
+
+/* ── 3-D card deck ───────────────────────────────────────────────────────── */
+.card-deck {
+  position: relative;
+  width: 310px;
+  height: 260px;          /* height of one card; back cards just peek under */
+  perspective: 1100px;
+  margin: 10px auto 6px;
 }
 
-@keyframes bob {
-  0%, 100% { transform: translateY(0px);  }
-  50%       { transform: translateY(-10px); }
-}
-
-.domain-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 22px 16px;
+.stack-card {
+  position: absolute;
+  inset: 0;
+  border-radius: 22px;
   border: 1px solid var(--glass-border);
-  border-radius: 16px;
-  background: var(--panel);
+  background: rgba(13, 14, 36, 0.82);
+  backdrop-filter: blur(18px);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 30px 24px;
   color: var(--text);
   cursor: pointer;
-  opacity: 0;
-  /* entrance first, then hand off to bob */
-  animation:
-    float-in 0.65s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--i, 0) * 0.14s) forwards,
-    bob       3.2s ease-in-out        calc(var(--i, 0) * 0.14s + 0.65s) infinite;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  user-select: none;
+  overflow: hidden;
 }
-.domain-card:hover {
-  border-color: var(--accent-2);
-  box-shadow: 0 18px 40px rgba(34, 211, 238, 0.3);
-  animation-play-state: paused;   /* freeze float on hover so it feels clickable */
-}
-.domain-card:hover { transform: translateY(-6px) scale(1.04); }
-.domain-icon { font-size: 2rem; }
-.domain-label { font-size: 1.05rem; font-weight: 700; }
-.domain-desc { font-size: 0.78rem; color: var(--text-dim); text-align: center; }
 
-.domain-badge {
-  margin-top: 2px;
-  padding: 5px 11px;
-  border: 1px solid var(--glass-border);
+/* glowing border on front card */
+.stack-card--front {
+  border-color: var(--card-color, var(--accent));
+  box-shadow:
+    0 0 0 1px var(--card-color, var(--accent)),
+    0 20px 50px rgba(0,0,0,0.5),
+    0 0 40px color-mix(in srgb, var(--card-color, var(--accent)) 25%, transparent);
+}
+.stack-card--front:hover {
+  box-shadow:
+    0 0 0 1.5px var(--card-color, var(--accent)),
+    0 24px 60px rgba(0,0,0,0.55),
+    0 0 60px color-mix(in srgb, var(--card-color, var(--accent)) 35%, transparent);
+}
+
+/* subtle colour glow layer inside each card */
+.stack-glow {
+  position: absolute; inset: 0; pointer-events: none; border-radius: inherit;
+}
+
+.stack-icon  { font-size: 2.6rem; filter: drop-shadow(0 4px 12px rgba(0,0,0,0.4)); }
+.stack-label { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; }
+.stack-desc  { font-size: 0.78rem; color: var(--text-dim); text-align: center; line-height: 1.45; }
+
+.stack-cta {
+  margin-top: 6px; padding: 6px 18px;
   border-radius: 999px;
-  background: var(--glass);
-  color: var(--text-dim);
-  font-size: 0.78rem;
-  cursor: pointer;
+  background: color-mix(in srgb, var(--card-color, var(--accent)) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--card-color, var(--accent)) 50%, transparent);
+  color: var(--card-color, var(--accent));
+  font-size: 0.78rem; font-weight: 600;
+  transition: background 0.2s;
+}
+.stack-card--front:hover .stack-cta {
+  background: color-mix(in srgb, var(--card-color, var(--accent)) 30%, transparent);
+}
+
+/* ── Deck navigation ─────────────────────────────────────────────────────── */
+.deck-nav {
+  display: flex; align-items: center; gap: 16px; margin-top: 80px;
+}
+.deck-arrow {
+  background: var(--glass); border: 1px solid var(--glass-border); border-radius: 50%;
+  width: 38px; height: 38px; font-size: 1.4rem; line-height: 1;
+  color: var(--text-dim); cursor: pointer; transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.deck-arrow:hover:not(:disabled) { background: rgba(255,255,255,0.14); color: var(--text); }
+.deck-arrow:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.deck-dots { display: flex; gap: 8px; align-items: center; }
+.deck-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--glass-border); border: none;
+  cursor: pointer; transition: all 0.25s; padding: 0;
+}
+.deck-dot.active { width: 22px; border-radius: 4px; }
+.deck-dot:hover:not(.active) { background: var(--text-dim); }
+
+.deck-label {
+  font-size: 0.82rem; color: var(--text-dim); text-align: center;
+  max-width: 340px; line-height: 1.5; min-height: 1.4em; margin-top: 4px;
+}
+
+/* domain badge (inside chat — change domain button) */
+.domain-badge {
+  margin-top: 2px; padding: 5px 11px;
+  border: 1px solid var(--glass-border); border-radius: 999px;
+  background: var(--glass); color: var(--text-dim); font-size: 0.78rem; cursor: pointer;
 }
 .domain-badge:hover { border-color: var(--accent-2); color: var(--text); }
-
-@media (max-width: 560px) {
-  .domain-grid { grid-template-columns: 1fr; }
-}
 
 /* ---- left sidebar: branding + uploads ---- */
 .sidebar {
@@ -126,20 +161,35 @@ body.chat-active {
   color: transparent;
 }
 
-.upload-bar { display: flex; flex-direction: column; gap: 10px; }
-.upload-bar button {
-  width: 100%;
-  padding: 11px 14px;
-  border: 1px solid var(--glass-border);
-  border-radius: 10px;
-  background: var(--glass);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 0.9rem;
-  text-align: left;
-  transition: all 0.15s;
+.upload-bar { display: flex; flex-direction: column; gap: 8px; }
+.upload-btn {
+  width: 100%; padding: 10px 14px;
+  border: 1px solid var(--glass-border); border-radius: 10px;
+  background: var(--glass); color: var(--text);
+  cursor: pointer; font-size: 0.88rem; text-align: left; transition: all 0.15s;
 }
-.upload-bar button:hover { border-color: var(--accent-2); box-shadow: 0 0 12px rgba(34, 211, 238, 0.3); }
+.upload-btn:hover:not(:disabled) { border-color: var(--accent-2); box-shadow: 0 0 12px rgba(34,211,238,0.25); }
+.upload-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.upload-btn--folder { border-color: rgba(251,191,36,0.3); }
+.upload-btn--folder:hover:not(:disabled) { border-color: #fbbf24; box-shadow: 0 0 12px rgba(251,191,36,0.25); }
+.upload-btn--docs { border-color: rgba(167,139,250,0.3); }
+.upload-btn--docs:hover:not(:disabled) { border-color: #a78bfa; box-shadow: 0 0 12px rgba(167,139,250,0.25); }
+
+/* folder upload progress */
+.folder-progress {
+  position: relative; height: 28px; border-radius: 8px;
+  background: rgba(0,0,0,0.35); border: 1px solid var(--glass-border); overflow: hidden;
+}
+.folder-progress-bar {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.3s ease; border-radius: inherit;
+}
+.folder-progress-label {
+  position: absolute; inset: 0; display: flex; align-items: center; padding: 0 10px;
+  font-size: 0.72rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
 .status { font-size: 0.8rem; color: var(--text-dim); line-height: 1.5; }
 
 /* ---- PII warning panel ---- */
