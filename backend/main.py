@@ -208,8 +208,9 @@ async def upload_data(
     domain: str = Form("general"),
     current_user: User = Depends(get_current_user),
 ):
-    if not file.filename or not file.filename.lower().endswith((".csv", ".xlsx", ".xls")):
-        raise HTTPException(400, "Please upload a .csv, .xlsx or .xls file")
+    DATA_EXTS = (".csv", ".xlsx", ".xls", ".tsv", ".json")
+    if not file.filename or not file.filename.lower().endswith(DATA_EXTS):
+        raise HTTPException(400, f"Please upload a data file ({', '.join(DATA_EXTS)})")
     path = _save_temp(file)
     try:
         df = analysis.load_dataframe(str(path), file.filename)

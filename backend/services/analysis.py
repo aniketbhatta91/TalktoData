@@ -15,8 +15,15 @@ MAX_COLS = 120       # columns included in profile sent to LLM
 
 
 def load_dataframe(path: str, filename: str) -> pd.DataFrame:
-    if filename.lower().endswith((".xlsx", ".xls")):
+    fn = filename.lower()
+    if fn.endswith((".xlsx", ".xls")):
         df = pd.read_excel(path, nrows=MAX_ROWS)
+    elif fn.endswith(".tsv"):
+        df = pd.read_csv(path, sep="\t", nrows=MAX_ROWS, on_bad_lines="skip", low_memory=False)
+    elif fn.endswith(".json"):
+        df = pd.read_json(path)
+        if len(df) > MAX_ROWS:
+            df = df.head(MAX_ROWS)
     else:
         df = pd.read_csv(path, nrows=MAX_ROWS, on_bad_lines="skip", low_memory=False)
     df.columns = [str(c).strip() for c in df.columns]

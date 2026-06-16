@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import { confirmUpload, uploadData, uploadDocs } from '../api'
 
-const DATA_EXTS = /\.(csv|xlsx|xls)$/i
-const MAX_FILE_MB = 100   // skip files larger than this in folder upload
+const DATA_EXTS = /\.(csv|xlsx|xls|tsv)$/i
+const DOC_EXTS  = /\.(pdf|docx|doc|txt|md|pptx|ppt|json)$/i
+const MAX_FILE_MB = 100
 
 export default function FileUpload({ domain, session, onDataUploaded, onStatus }) {
   const dataAccept = domain?.dataAccept || '.csv,.xlsx,.xls'
@@ -57,76 +58,77 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
 
   /* ── folder upload ──────────────────────────────────────────────────────── */
   const handleFolder = async (e) => {
-    const all = [...e.target.files]
-
-    // Filter: data files only, no hidden/system files
-    const dataFiles = all.filter(f =>
-      DATA_EXTS.test(f.name) && !f.name.startsWith('.')
-    )
-
-    if (!dataFiles.length) {
-      onStatus('No CSV or Excel files found in the selected folder.')
-      e.target.value = ''
-      return
-    }
-
-    // Separate oversized from processable
     const maxBytes = MAX_FILE_MB * 1024 * 1024
-    const tooBig  = dataFiles.filter(f => f.size > maxBytes)
-    const files   = dataFiles.filter(f => f.size <= maxBytes)
+    const all = [...e.target.files].filter(f => !f.name.startsWith('.') && !f.name.startsWith('~'))
 
-    if (tooBig.length) {
-      onStatus(`Skipping ${tooBig.length} file(s) over ${MAX_FILE_MB} MB: ${tooBig.map(f => f.name).join(', ')}`)
-    }
+    // Route by type
+    const dataFiles = all.filter(f => DATA_EXTS.test(f.name) && f.size <= maxBytes)
+    const docFiles  = all.filter(f => DOC_EXTS.test(f.name)  && f.size <= maxBytes)
+    const tooBig    = all.filter(f => f.size > maxBytes)
+    const skipped   = all.filter(f => !DATA_EXTS.test(f.name) && !DOC_EXTS.test(f.name) && f.size <= maxBytes)
 
-    if (!files.length) {
-      onStatus(`All files exceeded the ${MAX_FILE_MB} MB limit. Please use smaller files.`)
+    if (!dataFiles.length && !docFiles.length) {
+      const note = tooBig.length ? ` (${tooBig.length} files exceeded ${MAX_FILE_MB} MB limit)` : ''
+      onStatus(`No supported files found in folder${note}. Supported: CSV, Excel, TSV, PDF, DOCX, TXT, MD, JSON.`)
       e.target.value = ''
       return
     }
 
+    const total = dataFiles.length + docFiles.length
     setBusy(true)
-    setFolderProgress({ done: 0, total: files.length, name: '' })
+    setFolderProgress({ done: 0, total, name: '' })
 
-    let lastRes = null
+    let lastDataRes = null
     let sid = session?.session_id
-    let successCount = 0
+    let dataOk = 0
     const errors = []
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]
-      setFolderProgress({ done: i, total: files.length, name: file.name })
-      onStatus(`Uploading ${i + 1}/${files.length}: ${file.name}…`)
-
+    // ── 1. Upload data files one by one ────────────────────────────────────
+    for (let i = 0; i < dataFiles.length; i++) {
+      const file = dataFiles[i]
+      setFolderProgress({ done: i, total, name: file.name })
+      onStatus(`Data ${i + 1}/${dataFiles.length}: ${file.name}…`)
       try {
         const res = await uploadData(file, sid, domain?.id)
         sid = res.session_id
-
         if (res.pii_detected) {
-          // Auto-proceed raw so the batch doesn't stall
           const confirmed = await confirmUpload(res.pending_id, 'proceed')
-          lastRes = confirmed
+          lastDataRes = confirmed
         } else {
-          lastRes = res
+          lastDataRes = res
         }
-        successCount++
+        dataOk++
       } catch (err) {
         errors.push(`${file.name}: ${err.message}`)
-        console.error(`Folder upload error — ${file.name}:`, err)
-        // Continue with next file even if this one failed
+      }
+    }
+
+    // ── 2. Upload doc files as a single batch ───────────────────────────────
+    let docChunks = 0
+    if (docFiles.length) {
+      setFolderProgress({ done: dataFiles.length, total, name: `${docFiles.length} document(s)…` })
+      onStatus(`Indexing ${docFiles.length} document(s) into knowledge base…`)
+      try {
+        const res = await uploadDocs(docFiles, domain?.id)
+        docChunks = res.ingested?.reduce((s, r) => s + (r.chunks_indexed || 0), 0) || 0
+      } catch (err) {
+        errors.push(`Documents: ${err.message}`)
       }
     }
 
     setFolderProgress(null)
 
-    if (lastRes) {
-      onDataUploaded(lastRes)
-      const errNote = errors.length ? ` · ${errors.length} failed` : ''
-      onStatus(`Loaded ${successCount}/${files.length} files${errNote}. Active: '${lastRes.dataset}'.`)
-    } else {
-      onStatus(`No files could be loaded. Errors: ${errors.slice(0, 3).join(' | ')}`)
-    }
+    // ── 3. Report ───────────────────────────────────────────────────────────
+    if (lastDataRes) onDataUploaded(lastDataRes)
 
+    const parts = []
+    if (dataOk)      parts.push(`${dataOk} data file${dataOk > 1 ? 's' : ''} loaded`)
+    if (docChunks)   parts.push(`${docChunks} doc chunks indexed`)
+    if (errors.length) parts.push(`${errors.length} failed`)
+    if (tooBig.length) parts.push(`${tooBig.length} skipped (over ${MAX_FILE_MB} MB)`)
+    if (skipped.length) parts.push(`${skipped.length} unsupported type skipped`)
+
+    onStatus(parts.join(' · ') || 'Folder processed.')
     setBusy(false)
     e.target.value = ''
   }
