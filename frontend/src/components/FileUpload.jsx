@@ -242,8 +242,7 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
     if (errors.length) parts.push(`${errors.length} error(s)`)
     if (tooBig.length) parts.push(`${tooBig.length} skipped (over ${MAX_FILE_MB} MB)`)
 
-    const summary = parts.join(' · ') || 'Folder processed.'
-    onStatus(`${summary} — Try: "Create a table of [associates] and [certifications] from the filenames"`)
+    onStatus(parts.join(' · ') || 'Folder processed.')
     setBusy(false)
     // reset file input so the same folder can be re-selected
     if (folderRef.current) folderRef.current.value = ''
