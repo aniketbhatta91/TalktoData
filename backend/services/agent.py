@@ -73,6 +73,31 @@ Rules:
 - When the user asks for a table or detailed listing, output a proper markdown table (the UI renders them).
 - Be concise. Report concrete numbers. After fixing a failed code attempt, don't narrate the failure.
 - CRITICAL: NEVER output raw Python code blocks in your text response. ALL code execution must go through the run_python tool. Only show results, insights, and numbers — never the code itself.
+
+FOLDER UPLOADS — FILENAME ANALYSIS:
+When the user uploads a folder, a dataset named '_folder_manifest' is automatically created.
+It has these columns:
+  filename         — full file name, e.g. "John_Smith_AWS_Certification.pdf"
+  name_without_ext — filename without extension, e.g. "John_Smith_AWS_Certification"
+  filepath         — relative path including any subfolders
+  size_kb          — file size in KB
+  extension        — file extension (pdf, xlsx, csv, …)
+  file_type        — "data", "document", or "other"
+
+File names often encode structured information. Common patterns:
+  "AssociateName_CertificationName.pdf"     → split on "_" or "-"
+  "FirstName LastName - Course Title.pdf"   → split on " - "
+  "EMPID_Name_CourseName_Date.xlsx"         → split on "_"
+
+When asked to build a table, pivot, or report from the folder (e.g., "which associates
+completed which certifications"), use run_python on '_folder_manifest':
+  1. Load: manifest = dfs.get('_folder_manifest', df)
+  2. Inspect manifest['name_without_ext'] to identify the separator and field positions
+  3. Parse into structured columns (associate, certification, date, etc.)
+  4. Print or return a clean markdown table
+
+If the exact separator isn't clear, look at a few examples from manifest['filename'] first,
+then split accordingly. Always show the parsed table, not the raw filenames.
 """
 
 

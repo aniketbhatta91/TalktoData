@@ -28,6 +28,42 @@ function buildFolderIndex(allFiles) {
   return new File([lines.join('\n')], '_folder_index.txt', { type: 'text/plain' })
 }
 
+/**
+ * Build a CSV manifest of every file in the folder.
+ * Uploaded as a DATA file so the LLM can query file names with Python/pandas.
+ *
+ * Columns:
+ *   filename          — e.g. "John_Smith_AWS_Cert.pdf"
+ *   name_without_ext  — e.g. "John_Smith_AWS_Cert"  (easy to split/parse)
+ *   filepath          — relative path including subfolders
+ *   size_kb           — file size in KB
+ *   extension         — file extension without dot
+ *   file_type         — "data" | "document" | "other"
+ */
+function buildManifestCSV(allFiles) {
+  const esc = v => `"${String(v).replace(/"/g, '""')}"`
+  const header = 'filename,name_without_ext,filepath,size_kb,extension,file_type'
+  const rows = allFiles.map(f => {
+    const dotIdx = f.name.lastIndexOf('.')
+    const nameNoExt = dotIdx > 0 ? f.name.slice(0, dotIdx) : f.name
+    const ext = dotIdx > 0 ? f.name.slice(dotIdx + 1).toLowerCase() : ''
+    const filepath = f.webkitRelativePath || f.name
+    const isData = DATA_EXTS.test(f.name)
+    const isDoc  = DOC_EXTS.test(f.name)
+    const ftype  = isData ? 'data' : isDoc ? 'document' : 'other'
+    return [
+      esc(f.name),
+      esc(nameNoExt),
+      esc(filepath),
+      (f.size / 1024).toFixed(2),
+      esc(ext),
+      esc(ftype),
+    ].join(',')
+  })
+  const csv = [header, ...rows].join('\n')
+  return new File([csv], '_folder_manifest.csv', { type: 'text/csv' })
+}
+
 export default function FileUpload({ domain, session, onDataUploaded, onStatus }) {
   const dataAccept = domain?.dataAccept || '.csv,.xlsx,.xls'
   const docsAccept = domain?.docsAccept || '.pdf,.docx,.xlsx,.xls,.csv,.txt,.md'
@@ -128,17 +164,36 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
     const docFiles  = all.filter(f => DOC_EXTS.test(f.name)  && f.size <= maxBytes)
     const tooBig    = all.filter(f => f.size > maxBytes)
 
-    const total = dataFiles.length + (docFiles.length ? 1 : 0)
+    // +1 for manifest CSV, +1 for doc batch (if any)
+    const total = 1 + dataFiles.length + (docFiles.length ? 1 : 0)
     setBusy(true)
     setFolderFiles(null)
-    setFolderProgress({ done: 0, total: Math.max(total, 1), name: 'Preparing…' })
+    setFolderProgress({ done: 0, total, name: 'Building file manifest…' })
 
     let lastDataRes = null
     let sid = session?.session_id
     let dataOk = 0
     const errors = []
 
-    // ── 1. Upload a folder index doc so the LLM knows every filename ─────
+    // ── 1a. Upload manifest CSV as a DATA file ────────────────────────────
+    //    This gives the LLM a pandas DataFrame where every row is a file.
+    //    The LLM can then parse filenames with Python to build tables.
+    try {
+      const manifestFile = buildManifestCSV(all)
+      const manifestRes = await uploadData(manifestFile, sid, domain?.id)
+      sid = manifestRes.session_id   // carry session forward
+      if (manifestRes.pii_detected) {
+        // filenames are never real PII — just proceed
+        const confirmed = await confirmUpload(manifestRes.pending_id, 'proceed')
+        lastDataRes = confirmed
+      } else {
+        lastDataRes = manifestRes
+      }
+    } catch (e) {
+      console.warn('Manifest upload failed:', e)
+    }
+
+    // ── 1b. Upload plain-text folder index into RAG docs ─────────────────
     try {
       const indexFile = buildFolderIndex(all)
       await uploadDocs([indexFile], domain?.id)
@@ -147,7 +202,7 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
     // ── 2. Data files one by one ─────────────────────────────────────────
     for (let i = 0; i < dataFiles.length; i++) {
       const file = dataFiles[i]
-      setFolderProgress({ done: i, total, name: file.webkitRelativePath || file.name })
+      setFolderProgress({ done: 1 + i, total, name: file.webkitRelativePath || file.name })
       onStatus(`Data ${i + 1}/${dataFiles.length}: ${file.name}…`)
       try {
         const res = await uploadData(file, sid, domain?.id)
@@ -167,7 +222,7 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
     // ── 3. Doc files as one batch ────────────────────────────────────────
     let docChunks = 0
     if (docFiles.length) {
-      setFolderProgress({ done: dataFiles.length, total, name: `${docFiles.length} document(s)` })
+      setFolderProgress({ done: 1 + dataFiles.length, total, name: `${docFiles.length} document(s)` })
       onStatus(`Indexing ${docFiles.length} document(s)…`)
       try {
         const res = await uploadDocs(docFiles, domain?.id)
@@ -187,7 +242,8 @@ export default function FileUpload({ domain, session, onDataUploaded, onStatus }
     if (errors.length) parts.push(`${errors.length} error(s)`)
     if (tooBig.length) parts.push(`${tooBig.length} skipped (over ${MAX_FILE_MB} MB)`)
 
-    onStatus(parts.join(' · ') || 'Folder processed.')
+    const summary = parts.join(' · ') || 'Folder processed.'
+    onStatus(`${summary} — Try: "Create a table of [associates] and [certifications] from the filenames"`)
     setBusy(false)
     // reset file input so the same folder can be re-selected
     if (folderRef.current) folderRef.current.value = ''
