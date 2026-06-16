@@ -10,9 +10,55 @@ Tools available to the model:
 """
 import json
 import re
+import time
 
 import config
 from services import analysis, rag, session_store, settings, sql_guard
+
+
+# ── Rate-limit retry helper ───────────────────────────────────────────────────
+
+class RateLimitError(Exception):
+    """Raised when all retry attempts are exhausted due to rate limiting."""
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    name = type(exc).__name__
+    msg  = str(exc).lower()
+    return (
+        "ratelimit" in name.lower()
+        or "rate_limit" in name.lower()
+        or "429" in msg
+        or "rate limit" in msg
+        or "too many requests" in msg
+        or "quota" in msg
+    )
+
+
+def _retry(fn, *args, max_retries: int = 3, base_delay: float = 5.0, **kwargs):
+    """Call fn(*args, **kwargs) with exponential backoff on rate-limit errors.
+
+    Delays:  attempt 1 → base_delay s,  attempt 2 → base_delay*2 s,  etc.
+    Raises RateLimitError after max_retries are exhausted.
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if not _is_rate_limit(exc):
+                raise               # non-rate-limit errors bubble immediately
+            last_exc = exc
+            if attempt < max_retries:
+                wait = base_delay * (2 ** attempt)
+                print(f"[WARN] Rate limit hit — retrying in {wait:.0f}s "
+                      f"(attempt {attempt + 1}/{max_retries})", flush=True)
+                time.sleep(wait)
+
+    raise RateLimitError(
+        f"Rate limit reached after {max_retries} retries. "
+        "Please wait a moment and try again, or reduce the size of your request."
+    ) from last_exc
 
 
 def _strip_code_blocks(text: str) -> str:
@@ -212,10 +258,13 @@ def run_agent(session_id: str, message: str, history: list, domain: str = "") ->
     elif intent == "data_analysis":
         system += "\n\nThis is a data-analysis request: answer with run_python or run_sql on the datasets."
 
-    if config.LLM_PROVIDER == "openai":
-        result = _run_openai(session, system, message, history, domain)
-    else:
-        result = _run_anthropic(session, system, message, history, domain)
+    try:
+        if config.LLM_PROVIDER == "openai":
+            result = _run_openai(session, system, message, history, domain)
+        else:
+            result = _run_anthropic(session, system, message, history, domain)
+    except RateLimitError as e:
+        return {"text": f"⚠️ {e}", "figures": [], "intent": intent}
     result["intent"] = intent
     return result
 
@@ -236,7 +285,8 @@ def _run_anthropic(session, system: str, message: str, history: list, domain: st
     cfg = settings.get_all()
 
     for _ in range(cfg["max_agent_turns"]):
-        response = client.messages.create(
+        response = _retry(
+            client.messages.create,
             model=config.ANTHROPIC_MODEL, max_tokens=cfg["max_tokens"],
             temperature=cfg["temperature"],
             system=system, tools=tools, messages=messages,
@@ -278,17 +328,20 @@ def _run_openai(session, system: str, message: str, history: list, domain: str =
     from openai import BadRequestError
 
     for _ in range(cfg["max_agent_turns"]):
-        response = None
-        for attempt in range(3):
-            try:
-                response = client.chat.completions.create(
-                    model=config.OPENAI_MODEL, messages=messages, tools=tools,
-                    max_tokens=cfg["max_tokens"], temperature=cfg["temperature"],
-                )
-                break
-            except BadRequestError as e:
-                if "tool_use_failed" not in str(e) or attempt == 2:
-                    raise
+        # Wrap in _retry for rate limits; keep inner loop for BadRequestError (tool_use_failed)
+        def _create_completion():
+            for attempt in range(3):
+                try:
+                    return client.chat.completions.create(
+                        model=config.OPENAI_MODEL, messages=messages, tools=tools,
+                        max_tokens=cfg["max_tokens"], temperature=cfg["temperature"],
+                    )
+                except BadRequestError as e:
+                    if "tool_use_failed" not in str(e) or attempt == 2:
+                        raise
+            return None  # unreachable
+
+        response = _retry(_create_completion)
         msg = response.choices[0].message
         if not msg.tool_calls:
             return {"text": _strip_code_blocks(msg.content or ""), "figures": figures}
@@ -341,18 +394,20 @@ def _stream_openai(session, system: str, message: str, history: list, domain: st
     figures = []
 
     for _ in range(cfg["max_agent_turns"]):
-        stream = None
-        for attempt in range(3):
-            try:
-                stream = client.chat.completions.create(
-                    model=config.OPENAI_MODEL, messages=messages, tools=tools,
-                    max_tokens=cfg["max_tokens"], temperature=cfg["temperature"],
-                    stream=True,
-                )
-                break
-            except BadRequestError as e:
-                if "tool_use_failed" not in str(e) or attempt == 2:
-                    raise
+        def _create_stream():
+            for attempt in range(3):
+                try:
+                    return client.chat.completions.create(
+                        model=config.OPENAI_MODEL, messages=messages, tools=tools,
+                        max_tokens=cfg["max_tokens"], temperature=cfg["temperature"],
+                        stream=True,
+                    )
+                except BadRequestError as e:
+                    if "tool_use_failed" not in str(e) or attempt == 2:
+                        raise
+            return None  # unreachable
+
+        stream = _retry(_create_stream)
 
         full_content = ""
         content_buffer = []   # buffer tokens — flush only if no tool call follows
@@ -434,14 +489,17 @@ def _stream_anthropic(session, system: str, message: str, history: list, domain:
         current_tool = None
         text_buffer = []   # buffer text tokens; flush only after we know stop_reason
 
-        with client.messages.stream(
-            model=config.ANTHROPIC_MODEL,
-            max_tokens=cfg["max_tokens"],
-            temperature=cfg["temperature"],
-            system=system,
-            tools=tools,
-            messages=messages,
-        ) as stream:
+        def _open_stream():
+            return client.messages.stream(
+                model=config.ANTHROPIC_MODEL,
+                max_tokens=cfg["max_tokens"],
+                temperature=cfg["temperature"],
+                system=system,
+                tools=tools,
+                messages=messages,
+            )
+
+        with _retry(_open_stream) as stream:
             for event in stream:
                 etype = getattr(event, "type", None)
 
@@ -570,12 +628,17 @@ def run_agent_stream(session_id: str, message: str, history: list, domain: str =
     text_buf = []
     final_figures = []
 
-    for event in gen:
-        yield event
-        if event["type"] == "token":
-            text_buf.append(event["text"])
-        elif event["type"] == "figures":
-            final_figures = event.get("figures", [])
+    try:
+        for event in gen:
+            yield event
+            if event["type"] == "token":
+                text_buf.append(event["text"])
+            elif event["type"] == "figures":
+                final_figures = event.get("figures", [])
+    except RateLimitError as e:
+        yield {"type": "token", "text": f"⚠️ {e}"}
+        yield {"type": "figures", "figures": []}
+        return
 
     # ── Cache the assembled result ────────────────────────────────────────────
     if text_buf:
